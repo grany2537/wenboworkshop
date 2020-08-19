@@ -1,0 +1,111 @@
+from pyspark.sql import SparkSession
+from datetime import datetime
+from pandicorn.email import DataLakeEmailHandler 
+
+try:
+    spark = SparkSession \
+            .builder \
+            .appName("blackknight_preaudit") \
+            .enableHiveSupport() \
+            .getOrCreate()
+except Exception as e:
+    print("\n------------------------------------------------------------")
+    print("Error found in creating Spark session")
+    print(e)
+    print("------------------------------------------------------------\n")
+    raise
+
+
+
+
+
+class blackKnightPreAudit:
+
+    def __init__(self):
+        pass
+
+    # Check if table exists
+    def checkTableExists(self,DB,TABLE):
+        table_exists = TABLE in [row['tableName'] for row in spark.sql(f'show tables in {DB}').collect()]
+        return table_exists
+
+    # Knowing it is a Partition  
+    def checkpartitons(self,DB,TABLE,emailer,exceptions):
+    
+        current_date = datetime.now().strftime('%Y-%m-%d')
+        table_check = self.checkTableExists(DB,TABLE)
+    
+        emailer.metrics["Table audited"] = f'{DB}.{TABLE}'
+        emailer.metrics["Current date"] = current_date
+        
+
+        if(table_check):
+            table_count= spark.table(f'{DB}.{TABLE}').where(f"datekey = '{current_date}'").count()            
+            if(table_count > 0):
+                emailer.metrics["Total count"] = total_count
+                return f"latest partition exists for {DB}.{TABLE} with record count : {table_count}"
+                
+            else:
+                emailer.metrics["Total count"] = total_count
+                exceptions.append(f"latest partition does not exists for {DB}.{TABLE}")
+                return exceptions
+        
+    # Knowing it is a table
+    def checkNonPartiton(self,DB,TABLE,emailer,exceptions):
+
+        table_check = self.checkTableExists(DB,TABLE)
+        
+        emailer.metrics["Table audited"] = f'{DB}.{TABLE}'
+        emailer.metrics["Current date"] = current_date
+    
+        if(table_check):
+            temp_table = spark.table(f'{DB}.{TABLE}')
+            total_count = temp_table.count()
+    
+        if total_count == 0:
+            emailer.metrics["Total count"] = total_count
+            return f"Count of {DB}.{TABLE}: {total_count}"
+        
+        else:
+            emailer.metrics["Total count"] = total_count
+            exceptions.append(f"Count of {DB}.{TABLE}: {total_count}")
+            return exceptions
+
+
+
+partitionTables = {"leadcreationevent":"qtweets_raw","clientiq":"Conformed","blacknightmlsstage" : "blackknight_raw"
+                        }
+nonPartitionTables = {"loanstatus_orc":"Leadgen_raw_access","initial_population_stage":"Leadgen_raw_access" ,
+                "client_temp":"Automatedleadgeneration","bigbang_output_vw": "Bigbang_raw_access"}
+
+success_recipients = []
+emailer = DataLakeEmailHandler(app_name="blackknight",
+                                   teams_channel_addr=','.join(success_recipients),
+                                   teams_channel_url='',
+                                   description="Pre Audit job for Blackknight Process",
+                                   ops_url='')                
+
+preAudit = blackKnightPreAudit()
+
+emailer.metrics["App ID"] = spark.sparkContext.applicationId
+
+exceptions = []
+
+
+print("************************* checking partition tables *************************")
+for table in partitionTables:
+    result = preAudit.checkpartitons(partitionTables[table],table,emailer,exceptions)
+    exceptions = exceptions +  result
+    print(result)
+    
+print("************************* checking nonpartition tables *************************")
+for table in nonPartitionTables:
+    result = preAudit.checkNonPartiton(nonPartitionTables[table],table,emailer,exceptions)
+    exceptions = exceptions +  result
+    print(result)
+
+if(len(exceptions>0):
+        emailer.send_failure_msg(f"The following exceptions were encountered:\n" + "\n".join(exceptions))
+else:
+    emailer.send_success_msg()
+    
